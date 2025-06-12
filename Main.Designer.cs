@@ -1,5 +1,4 @@
-﻿
-namespace WindowsRepoTool
+﻿namespace WindowsRepoTool
 {
     partial class Main
     {
@@ -42,11 +41,13 @@ namespace WindowsRepoTool
             this.detailsBox = new System.Windows.Forms.TextBox();
             this.searchButton = new System.Windows.Forms.Button();
             this.darkModeBtn = new System.Windows.Forms.CheckBox();
+            this.languageComboBox = new System.Windows.Forms.ComboBox();
+            this.languageLabel = new System.Windows.Forms.Label();
             this.SuspendLayout();
             // 
             // addRepoBtn
             // 
-            this.addRepoBtn.Location = new System.Drawing.Point(12, 420);
+            this.addRepoBtn.Location = new System.Drawing.Point(12, 388);
             this.addRepoBtn.Name = "addRepoBtn";
             this.addRepoBtn.Size = new System.Drawing.Size(193, 29);
             this.addRepoBtn.TabIndex = 0;
@@ -56,7 +57,7 @@ namespace WindowsRepoTool
             // 
             // addRepoBox
             // 
-            this.addRepoBox.Location = new System.Drawing.Point(12, 392);
+            this.addRepoBox.Location = new System.Drawing.Point(12, 360);
             this.addRepoBox.Name = "addRepoBox";
             this.addRepoBox.Size = new System.Drawing.Size(193, 22);
             this.addRepoBox.TabIndex = 1;
@@ -67,12 +68,12 @@ namespace WindowsRepoTool
             this.repoListBox.ItemHeight = 16;
             this.repoListBox.Location = new System.Drawing.Point(12, 12);
             this.repoListBox.Name = "repoListBox";
-            this.repoListBox.Size = new System.Drawing.Size(193, 372);
+            this.repoListBox.Size = new System.Drawing.Size(193, 340);
             this.repoListBox.TabIndex = 2;
             // 
             // clearAllReposBtn
             // 
-            this.clearAllReposBtn.Location = new System.Drawing.Point(12, 525);
+            this.clearAllReposBtn.Location = new System.Drawing.Point(12, 481);
             this.clearAllReposBtn.Name = "clearAllReposBtn";
             this.clearAllReposBtn.Size = new System.Drawing.Size(193, 29);
             this.clearAllReposBtn.TabIndex = 3;
@@ -82,7 +83,7 @@ namespace WindowsRepoTool
             // 
             // clearSelectedRepoBtn
             // 
-            this.clearSelectedRepoBtn.Location = new System.Drawing.Point(12, 490);
+            this.clearSelectedRepoBtn.Location = new System.Drawing.Point(12, 450);
             this.clearSelectedRepoBtn.Name = "clearSelectedRepoBtn";
             this.clearSelectedRepoBtn.Size = new System.Drawing.Size(193, 29);
             this.clearSelectedRepoBtn.TabIndex = 4;
@@ -92,7 +93,7 @@ namespace WindowsRepoTool
             // 
             // openSelectedRepoBtn
             // 
-            this.openSelectedRepoBtn.Location = new System.Drawing.Point(12, 455);
+            this.openSelectedRepoBtn.Location = new System.Drawing.Point(12, 419);
             this.openSelectedRepoBtn.Name = "openSelectedRepoBtn";
             this.openSelectedRepoBtn.Size = new System.Drawing.Size(193, 29);
             this.openSelectedRepoBtn.TabIndex = 5;
@@ -135,7 +136,7 @@ namespace WindowsRepoTool
             this.detailsBox.Multiline = true;
             this.detailsBox.Name = "detailsBox";
             this.detailsBox.ReadOnly = true;
-            this.detailsBox.ShortcutsEnabled = false;
+            this.detailsBox.ShortcutsEnabled = true;
             this.detailsBox.Size = new System.Drawing.Size(609, 164);
             this.detailsBox.TabIndex = 10;
             // 
@@ -152,7 +153,7 @@ namespace WindowsRepoTool
             // darkModeBtn
             // 
             this.darkModeBtn.AutoSize = true;
-            this.darkModeBtn.Location = new System.Drawing.Point(12, 563);
+            this.darkModeBtn.Location = new System.Drawing.Point(12, 565);
             this.darkModeBtn.Name = "darkModeBtn";
             this.darkModeBtn.Size = new System.Drawing.Size(99, 21);
             this.darkModeBtn.TabIndex = 13;
@@ -160,11 +161,32 @@ namespace WindowsRepoTool
             this.darkModeBtn.UseVisualStyleBackColor = true;
             this.darkModeBtn.CheckedChanged += new System.EventHandler(this.darkModeBtn_CheckedChanged);
             // 
+            // languageComboBox
+            // 
+            this.languageComboBox.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            this.languageComboBox.FormattingEnabled = true;
+            this.languageComboBox.Location = new System.Drawing.Point(12, 534);
+            this.languageComboBox.Name = "languageComboBox";
+            this.languageComboBox.Size = new System.Drawing.Size(193, 24);
+            this.languageComboBox.TabIndex = 14;
+            this.languageComboBox.SelectedIndexChanged += new System.EventHandler(this.languageComboBox_SelectedIndexChanged);
+            // 
+            // languageLabel
+            // 
+            this.languageLabel.AutoSize = true;
+            this.languageLabel.Location = new System.Drawing.Point(12, 515);
+            this.languageLabel.Name = "languageLabel";
+            this.languageLabel.Size = new System.Drawing.Size(68, 16);
+            this.languageLabel.TabIndex = 15;
+            this.languageLabel.Text = "Language";
+            // 
             // Main
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 16F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(848, 601);
+            this.Controls.Add(this.languageLabel);
+            this.Controls.Add(this.languageComboBox);
             this.Controls.Add(this.darkModeBtn);
             this.Controls.Add(this.searchButton);
             this.Controls.Add(this.detailsBox);
@@ -180,7 +202,7 @@ namespace WindowsRepoTool
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
             this.Name = "Main";
-            this.Text = "Windows Repo Tool v2.0.0";
+            this.Text = "Windows Repo Tool v3.0";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Main_FormClosing);
             this.ResumeLayout(false);
             this.PerformLayout();
@@ -201,5 +223,7 @@ namespace WindowsRepoTool
         private System.Windows.Forms.TextBox detailsBox;
         private System.Windows.Forms.Button searchButton;
         private System.Windows.Forms.CheckBox darkModeBtn;
+        private System.Windows.Forms.ComboBox languageComboBox;
+        private System.Windows.Forms.Label languageLabel;
     }
 }
