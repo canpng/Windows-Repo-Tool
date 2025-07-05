@@ -1,4 +1,4 @@
-# Windows Repo Tool v3.0
+# Windows Repo Tool v3.1
 
 Bu proje, Windows işletim sisteminde jailbreak repolarını yönetmek ve `.deb` paketlerini indirmek için geliştirilmiş modern ve hızlı bir masaüstü uygulamasıdır. Orijinal 2021 versiyonunun .NET 8 ile performans, kararlılık ve kullanıcı deneyimi odaklı olarak tamamen yeniden yazılmış halidir.
 
