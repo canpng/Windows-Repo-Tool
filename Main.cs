@@ -13,6 +13,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Collections;
 
 namespace WindowsRepoTool
 {
@@ -20,8 +21,10 @@ namespace WindowsRepoTool
     {
         private static readonly HttpClient client = new HttpClient();
         private bool isInitializing = true;
+        
+        private int currentSortColumn = -1;
+        private bool sortAscending = true;
 
-        // Paths
         private readonly string dataFolder;
         private readonly string settingsPath;
         private readonly string reposPath;
@@ -31,7 +34,6 @@ namespace WindowsRepoTool
             InitializeComponent();
             this.Load += new System.EventHandler(this.Main_Load);
             addRepoBox.Text = "https://";
-            searchBox.Text = "Search Packages";
             const string sDirectory = "Debs";
 
             if (!Directory.Exists(sDirectory))
@@ -39,14 +41,18 @@ namespace WindowsRepoTool
                 Directory.CreateDirectory(sDirectory);
             }
 
-            // Enable custom drawing for language combo to support dark mode colors
-            languageComboBox.DrawMode = DrawMode.OwnerDrawFixed;
-            languageComboBox.DrawItem += LanguageComboBox_DrawItem;
+            #if DEBUG
+            if (File.Exists("Languages/en.json") && !File.Exists("Languages/en.encrypted"))
+            {
+                EncryptLanguages.EncryptLanguageFiles();
+            }
+            #endif
 
-            // Prepare data directory structure
+            packageListView.ColumnClick += PackageListView_ColumnClick;
+
             dataFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data");
             Directory.CreateDirectory(dataFolder);
-            Directory.CreateDirectory(Path.Combine(dataFolder, "Languages")); // languages will be copied by build
+            Directory.CreateDirectory(Path.Combine(dataFolder, "Languages"));
 
             settingsPath = Path.Combine(dataFolder, "Settings.json");
             reposPath = Path.Combine(dataFolder, "Repos.json");
@@ -54,12 +60,6 @@ namespace WindowsRepoTool
 
         private async void Main_Load(object? sender, EventArgs e)
         {
-            // Initialize language ComboBox
-            languageComboBox.Items.Add(new { Name = "English", Code = "en" });
-            languageComboBox.Items.Add(new { Name = "Türkçe", Code = "tr" });
-            languageComboBox.DisplayMember = "Name";
-            languageComboBox.ValueMember = "Code";
-
             string sSettings = settingsPath;
             const string sText = "Packages.txt";
             const string sPackages = "Packages";
@@ -85,16 +85,16 @@ namespace WindowsRepoTool
 
             if (!File.Exists(sSettings))
             {
-                // Create settings file with defaults
-                var defaultSettings = new { Language = "tr" };
+
+                var defaultSettings = new { Language = "tr", DarkMode = false };
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 await File.WriteAllTextAsync(sSettings, JsonSerializer.Serialize(defaultSettings, options));
-                darkModeBtn.Checked = false;
                 SetSelectedLanguage("tr");
+                ApplyTheme(false);
             }
             else
             {
-                // Load existing settings
+
                 try
                 {
                     string settingsJson = await File.ReadAllTextAsync(sSettings);
@@ -110,21 +110,30 @@ namespace WindowsRepoTool
                         {
                             SetSelectedLanguage("tr");
                         }
+
+                        if (settings.TryGetValue("DarkMode", out var darkModeElement) && darkModeElement.ValueKind == JsonValueKind.True)
+                        {
+                            ApplyTheme(true);
+                        }
+                        else
+                        {
+                            ApplyTheme(false);
+                        }
                     }
-                    else // If settings are null/corrupt
+                    else
                     {
                         SetSelectedLanguage("tr");
+                        ApplyTheme(false);
                     }
                 }
                 catch
                 {
-                    // If settings file is corrupt, load defaults
-                    darkModeBtn.Checked = false;
                     SetSelectedLanguage("tr");
+                    ApplyTheme(false);
                 }
             }
             
-            await LocalizationManager.LoadLanguage(languageComboBox.SelectedValue?.ToString() ?? "tr");
+            await LocalizationManager.LoadLanguage(GetCurrentLanguageCode());
             ApplyLocalization();
 
             await LoadRepos();
@@ -138,6 +147,7 @@ namespace WindowsRepoTool
             public static List<string?> link = new List<string?>();
             public static List<string?> details = new List<string?>();
             public static List<string?> package = new List<string?>();
+            public static List<string?> architecture = new List<string?>();
             public static string? repo = "";
         }
 
@@ -195,6 +205,15 @@ namespace WindowsRepoTool
                 finalrepo = repo + "/";
             }
 
+            if (finalrepo.StartsWith("https://https://", StringComparison.OrdinalIgnoreCase))
+            {
+                finalrepo = finalrepo.Substring(8);
+            }
+            else if (finalrepo.StartsWith("http://https://", StringComparison.OrdinalIgnoreCase))
+            {
+                finalrepo = finalrepo.Substring(7);
+            }
+
             if (!repoListBox.Items.Contains(finalrepo))
             {
                 if (addRepoBox.Text != "https://" && addRepoBox.Text != "http://" && addRepoBox.Text != String.Empty)
@@ -203,6 +222,7 @@ namespace WindowsRepoTool
                     await SaveRepos();
                     addRepoBox.Clear();
                     addRepoBox.Text = "https://";
+                    MessageBox.Show(LocalizationManager.GetString("RepoAddedSuccessfully"), LocalizationManager.GetString("SuccessTitle"));
                     return;
                 }
                 else
@@ -226,6 +246,10 @@ namespace WindowsRepoTool
             if (result == DialogResult.Yes)
             {
                 repoListBox.Items.Clear();
+                packageListView.Items.Clear();
+                packageDetailsBox.Clear();
+                searchBox.Text = "";
+                searchBox.Enabled = false;
                 await SaveRepos();
                 MessageBox.Show(LocalizationManager.GetString("ClearedAllRepos"), LocalizationManager.GetString("NoticeTitle"));
                 return;
@@ -245,6 +269,10 @@ namespace WindowsRepoTool
                 if (result == DialogResult.Yes)
                 {
                     repoListBox.Items.Remove(repoListBox.SelectedItem);
+                    packageListView.Items.Clear();
+                    packageDetailsBox.Clear();
+                    searchBox.Text = "";
+                    searchBox.Enabled = false;
                     await SaveRepos();
                     MessageBox.Show(LocalizationManager.GetString("ClearedSelectedRepo"), LocalizationManager.GetString("NoticeTitle"));
                     return;
@@ -252,488 +280,419 @@ namespace WindowsRepoTool
             }
         }
 
-        private async void openSelectedRepoBtn_Click(object? sender, EventArgs e)
+        private async void repoListBox_SelectedIndexChanged(object? sender, EventArgs e)
         {
-            var selectedRepo = repoListBox.SelectedItem;
-            if (selectedRepo == null)
+            clearSelectedRepoBtn.Enabled = repoListBox.SelectedItem != null;
+
+            if (repoListBox.SelectedItem == null)
             {
-                MessageBox.Show(LocalizationManager.GetString("PleaseSelectRepo"), LocalizationManager.GetString("NoticeTitle"));
                 return;
             }
-            else
+
+            this.Cursor = Cursors.WaitCursor;
+            packageListView.Items.Clear();
+            packageDetailsBox.Clear();
+            
+            searchBox.Text = "";
+            searchBox.ForeColor = SystemColors.GrayText;
+            searchBox.Text = LocalizationManager.GetString("SearchPackages");
+            searchBox.Enabled = false;
+            
+            Globals.repo = repoListBox.GetItemText(repoListBox.SelectedItem);
+            string? repoUrl = Globals.repo;
+            const string packagesFile = "Packages";
+            const string compressedFileBz2 = "Packages.bz2";
+            const string compressedFileGz = "Packages.gz";
+
+            try
             {
-                packagesListBox.Items.Clear();
-                if (searchBox.Text != LocalizationManager.GetString("SearchPackages"))
+                Globals.name.Clear();
+                Globals.version.Clear();
+                Globals.link.Clear();
+                Globals.details.Clear();
+                Globals.package.Clear();
+                Globals.architecture.Clear();
+
+                if (Directory.Exists(packagesFile))
                 {
-                    searchBox.Text = LocalizationManager.GetString("SearchPackages");
+                    Directory.Delete(packagesFile, true);
                 }
-                detailsBox.Clear();
+                if (File.Exists(compressedFileBz2))
+                {
+                    File.Delete(compressedFileBz2);
+                }
+                if (File.Exists(compressedFileGz))
+                {
+                    File.Delete(compressedFileGz);
+                }
+
+
                 try
                 {
-                    const string sRepos = "https://sarahh12099.github.io/files/badrepos.txt";
-                    string badReposContent = await client.GetStringAsync(sRepos);
-                    using (StringReader reader = new StringReader(badReposContent))
+                    using (var httpClient = new HttpClient())
                     {
-                        string? check;
-                        while ((check = reader.ReadLine()) != null)
+                        var response = await httpClient.GetAsync(repoUrl + compressedFileBz2);
+                        response.EnsureSuccessStatusCode();
+                        using (var fileStream = new FileStream(compressedFileBz2, FileMode.Create, FileAccess.Write, FileShare.None))
                         {
-                            if (check == selectedRepo.ToString())
+                            await response.Content.CopyToAsync(fileStream);
+                        }
+                    }
+
+                    using (FileStream compressedStream = new FileStream(compressedFileBz2, FileMode.Open, FileAccess.Read))
+                    {
+                        using (var bigStream = new ICSharpCode.SharpZipLib.BZip2.BZip2InputStream(compressedStream))
+                        {
+                            using (FileStream decompressedStream = new FileStream(packagesFile, FileMode.Create, FileAccess.Write))
                             {
-                                var result = MessageBox.Show(LocalizationManager.GetString("DangerousRepoWarning"), LocalizationManager.GetString("WarningTitle"), MessageBoxButtons.YesNo);
-                                if (result == DialogResult.No)
-                                {
-                                    return;
-                                }
-                                break;
+                                bigStream.CopyTo(decompressedStream);
                             }
                         }
+                    }
+                }
+                catch (HttpRequestException)
+                {
+
+                    try
+                    {
+                        using (var httpClient = new HttpClient())
+                        {
+                            var response = await httpClient.GetAsync(repoUrl + compressedFileGz);
+                            response.EnsureSuccessStatusCode();
+                            using (var fileStream = new FileStream(compressedFileGz, FileMode.Create, FileAccess.Write, FileShare.None))
+                            {
+                                await response.Content.CopyToAsync(fileStream);
+                            }
+                        }
+                        using (FileStream compressedStream = new FileStream(compressedFileGz, FileMode.Open, FileAccess.Read))
+                        {
+                            using (GZipStream decompressionStream = new GZipStream(compressedStream, CompressionMode.Decompress))
+                            {
+                                using (FileStream decompressedStream = new FileStream(packagesFile, FileMode.Create, FileAccess.Write))
+                                {
+                                    decompressionStream.CopyTo(decompressedStream);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"{LocalizationManager.GetString("FailedToDownloadOrDecompress")} {ex.Message}", LocalizationManager.GetString("ErrorTitle"));
+                        return;
                     }
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine("Could not fetch bad repos list: " + ex.Message);
+                    MessageBox.Show($"{LocalizationManager.GetString("AnErrorOccurred")} {ex.Message}", LocalizationManager.GetString("ErrorTitle"));
+                    return;
                 }
 
-                packagesListBox.Items.Add(LocalizationManager.GetString("OpeningRepo"));
-                this.Enabled = false;
-
-                Globals.name.Clear();
-                Globals.version.Clear();
-                Globals.link.Clear();
-                Globals.details.Clear();
-                Globals.package.Clear();
-                packagesListBox.Items.Clear();
-
-                Globals.repo = selectedRepo.ToString()!;
-                const string sPath = "Packages.bz2";
-                const string sGz = "Packages.gz";
-                const string sFolder = "Packages";
-                const string sPackages = "Packages/Packages";
-                const string sText = "Packages.txt";
-                if (File.Exists(sPath))
+                if (File.Exists(packagesFile))
                 {
-                    File.Delete(sPath);
-                }
-                if (File.Exists(sGz))
-                {
-                    File.Delete(sGz);
-                }
-                if (File.Exists(sText))
-                {
-                    File.Delete(sText);
-                }
-                if (Directory.Exists(sFolder))
-                {
-                    Directory.Delete(sFolder, true);
-                }
+                    string[] lines = File.ReadAllLines(packagesFile);
+                    string? currentPackage = null;
+                    string? currentVersion = null;
+                    string? currentFilename = null;
+                    string? currentArchitecture = null;
+                    StringBuilder currentDetails = new StringBuilder();
 
-                string[] packageFileUrls =
-                {
-                    Globals.repo + "Packages.bz2",
-                    Globals.repo + "dists/stable/main/binary-iphoneos-arm/Packages.bz2",
-                    Globals.repo + "Packages.gz"
-                };
-
-                string? downloadedFilePath = null;
-
-                client.DefaultRequestHeaders.Clear();
-                client.DefaultRequestHeaders.Add("X-Machine", "iPhone8,1");
-                client.DefaultRequestHeaders.Add("X-Unique-ID", "8843d7f92416211de9ebb963ff4ce28125932878");
-                client.DefaultRequestHeaders.Add("X-Firmware", "13.1");
-                client.DefaultRequestHeaders.Add("User-Agent", "Telesphoreo APT-HTTP/1.0.592");
-
-                foreach (var url in packageFileUrls)
-                {
-                    try
+                    foreach (string line in lines)
                     {
-                        var response = await client.GetAsync(url);
-                        if (response.IsSuccessStatusCode)
+                        if (line.StartsWith("Package: "))
                         {
-                            var extension = Path.GetExtension(url);
-                            downloadedFilePath = "Packages" + extension;
-                            using (var fs = new FileStream(downloadedFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+                            currentPackage = line.Substring("Package: ".Length);
+                            currentDetails.AppendLine(line);
+                        }
+                        else if (line.StartsWith("Version: "))
+                        {
+                            currentVersion = line.Substring("Version: ".Length);
+                            currentDetails.AppendLine(line);
+                        }
+                        else if (line.StartsWith("Architecture: "))
+                        {
+                            currentArchitecture = line.Substring("Architecture: ".Length);
+                            currentDetails.AppendLine(line);
+                        }
+                        else if (line.StartsWith("Filename: "))
+                        {
+                            currentFilename = line.Substring("Filename: ".Length);
+                            currentDetails.AppendLine(line);
+                        }
+                        else if (string.IsNullOrWhiteSpace(line))
+                        {
+                            if (currentPackage != null && currentVersion != null && currentFilename != null)
                             {
-                                await response.Content.CopyToAsync(fs);
+                                Globals.name.Add(currentPackage);
+                                Globals.version.Add(currentVersion);
+                                Globals.link.Add(currentFilename);
+                                Globals.details.Add(currentDetails.ToString());
+                                Globals.package.Add(currentPackage);
+                                Globals.architecture.Add(currentArchitecture ?? "Unknown");
                             }
-                            break;
+                            currentPackage = null;
+                            currentVersion = null;
+                            currentFilename = null;
+                            currentArchitecture = null;
+                            currentDetails.Clear();
+                        }
+                        else
+                        {
+                            if (currentPackage != null)
+                            {
+                                currentDetails.AppendLine(line);
+                            }
                         }
                     }
-                    catch (HttpRequestException) { /* Continue to next URL */ }
-                }
 
-                if (downloadedFilePath == null)
-                {
-                    MessageBox.Show(LocalizationManager.GetString("ConnectionError"), LocalizationManager.GetString("ErrorTitle"));
-                    this.Enabled = true;
-                    packagesListBox.Items.Clear();
-                    return;
-                }
-                
-                // Try to find 7za.exe in common locations
-                string[] possiblePaths = {
-                    "7za.exe",
-                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "7za.exe"),
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "7-Zip", "7z.exe"),
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "7-Zip", "7z.exe")
-                };
-
-                string? zPath = null;
-                foreach (string path in possiblePaths)
-                {
-                    if (File.Exists(path))
+                    if (currentPackage != null && currentVersion != null && currentFilename != null)
                     {
-                        zPath = path;
-                        break;
-                    }
-                }
-
-                if (zPath == null)
-                {
-                    MessageBox.Show(LocalizationManager.GetString("SevenZipNotFound"), LocalizationManager.GetString("ErrorTitle"));
-                    this.Enabled = true;
-                    packagesListBox.Items.Clear();
-                    return;
-                }
-
-                try
-                {
-                    await Task.Run(() => {
-                        ProcessStartInfo pro = new ProcessStartInfo();
-                        pro.WindowStyle = ProcessWindowStyle.Hidden;
-                        pro.CreateNoWindow = true;
-                        pro.UseShellExecute = false;
-                        pro.FileName = zPath;
-                        pro.Arguments = string.Format("x \"{0}\" -y -o\"{1}\"", downloadedFilePath, sFolder);
-                        Process? x = Process.Start(pro);
-                        x?.WaitForExit();
-                    });
-                }
-                catch (Exception Ex)
-                {
-                    string titlefinal = "Notice";
-                    string messagefinal = Ex.ToString();
-                    MessageBox.Show(messagefinal, titlefinal);
-                    this.Enabled = true;
-                    packagesListBox.Items.Clear();
-                    return;
-                }
-
-                if (!File.Exists(sPackages))
-                {
-                    MessageBox.Show(LocalizationManager.GetString("ExtractionError"), LocalizationManager.GetString("ErrorTitle"));
-                    this.Enabled = true;
-                    packagesListBox.Items.Clear();
-                    return;
-                }
-
-                string packagesContent = await File.ReadAllTextAsync(sPackages);
-                if (File.Exists(sText))
-                {
-                    File.Delete(sText);
-                }
-
-                var packageEntries = packagesContent.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
-
-                // Use temporary lists to build package data
-                var listItems = new List<ListItem>();
-
-                foreach (var entry in packageEntries)
-                {
-                    string? name = null, version = null, link = null, package = null;
-                    var properties = entry.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-
-                    foreach (var prop in properties)
-                    {
-                        if (prop.StartsWith("Name: "))
-                            name = prop.Substring(6).Trim();
-                        else if (prop.StartsWith("Version: "))
-                            version = prop.Substring(9).Trim();
-                        else if (prop.StartsWith("Filename: "))
-                            link = prop.Substring(10).Trim();
-                        else if (prop.StartsWith("Package: "))
-                            package = prop.Substring(9).Trim();
+                        Globals.name.Add(currentPackage);
+                        Globals.version.Add(currentVersion);
+                        Globals.link.Add(currentFilename);
+                        Globals.details.Add(currentDetails.ToString());
+                        Globals.package.Add(currentPackage);
+                        Globals.architecture.Add(currentArchitecture ?? "Unknown");
                     }
 
-                    // Fallback to package id if name is missing
-                    if (name == null && package != null)
+                    for (int i = 0; i < Globals.name.Count; i++)
                     {
-                        name = package;
+                        var listViewItem = new ListViewItem(new string[] { Globals.name[i], Globals.version[i], Globals.architecture[i] });
+                        listViewItem.Tag = i; // Store original index
+                        packageListView.Items.Add(listViewItem);
                     }
-
-                    if (name != null && version != null && link != null && package != null)
-                    {
-                        string formattedEntry = entry.Replace("\r\n", "\n").Replace("\n", "\r\n");
-                        listItems.Add(new ListItem { Name = $"{name} v{version}", Link = link, Details = formattedEntry, Package = package, Version = version });
-                    }
+                    searchBox.Enabled = true;
+                    searchBox.ForeColor = SystemColors.GrayText;
+                    searchBox.Text = LocalizationManager.GetString("SearchPackages");
                 }
-
-                // Now, clear global state and UI, and repopulate
-                Globals.name.Clear();
-                Globals.version.Clear();
-                Globals.link.Clear();
-                Globals.details.Clear();
-                Globals.package.Clear();
-                packagesListBox.Items.Clear();
-
-                foreach (var item in listItems)
-                {
-                    // Add to UI
-                    packagesListBox.Items.Add(item);
-
-                    // Add to global state
-                    Globals.name.Add(item.Name);
-                    Globals.version.Add(item.Version);
-                    Globals.link.Add(item.Link);
-                    Globals.details.Add(item.Details);
-                    Globals.package.Add(item.Package);
-                }
-
-                packagesListBox.Sorted = true;
-                this.Enabled = true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"{LocalizationManager.GetString("ErrorProcessingRepo")} {ex.Message}", LocalizationManager.GetString("ErrorTitle"));
+            }
+            finally
+            {
+                this.Cursor = Cursors.Default;
             }
         }
 
-        private async void downloadSelectedPackageBtn_Click(object? sender, EventArgs e)
+        private void packageListView_SelectedIndexChanged(object? sender, EventArgs e)
         {
-            if (packagesListBox.SelectedItem is not ListItem selectedItem)
-            {
-                MessageBox.Show(LocalizationManager.GetString("PleaseSelectPackage"), LocalizationManager.GetString("NoticeTitle"));
-                return;
-            }
+            downloadSelectedPackageBtn.Enabled = packageListView.SelectedItems.Count > 0;
 
-            if (selectedItem.Package is null || selectedItem.Version is null || selectedItem.Link is null || Globals.repo is null)
+            if (packageListView.SelectedItems.Count > 0)
             {
-                MessageBox.Show(LocalizationManager.GetString("PackageInfoIncomplete"), LocalizationManager.GetString("ErrorTitle"));
-                return;
-            }
-
-            string selectedPackageItem = selectedItem.Package + "_" + selectedItem.Version;
-            string repoURL = Globals.repo;
-            string packageURL = selectedItem.Link;
-            string downloadURL = repoURL + packageURL;
-            
-            if (!Directory.Exists("Debs"))
-            {
-                Directory.CreateDirectory("Debs");
-            }
-
-            try
-            {
-                client.DefaultRequestHeaders.Clear();
-                client.DefaultRequestHeaders.Add("X-Machine", "iPhone8,1");
-                client.DefaultRequestHeaders.Add("X-Unique-ID", "8843d7f92416211de9ebb963ff4ce28125932878");
-                client.DefaultRequestHeaders.Add("X-Firmware", "13.1");
-                client.DefaultRequestHeaders.Add("User-Agent", "Telesphoreo APT-HTTP/1.0.592");
+                int selectedIndex = (int)packageListView.SelectedItems[0].Tag;
                 
-                byte[] fileBytes = await client.GetByteArrayAsync(downloadURL);
-                await File.WriteAllBytesAsync($"Debs/{selectedPackageItem}.deb", fileBytes);
-
-                MessageBox.Show(LocalizationManager.GetString("DownloadComplete"), LocalizationManager.GetString("NoticeTitle"));
+                if (selectedIndex >= 0 && selectedIndex < Globals.details.Count)
+                {
+                    packageDetailsBox.Text = Globals.details[selectedIndex];
+                }
+                else
+                {
+                    packageDetailsBox.Clear();
+                }
             }
-            catch (Exception)
+            else
             {
-                MessageBox.Show(LocalizationManager.GetString("DownloadFailed"), LocalizationManager.GetString("NoticeTitle"));
-            }
-        }
-
-        private void packagesListBox_SelectedIndexChanged(object? sender, EventArgs e)
-        {
-            detailsBox.Clear();
-            detailsBox.ScrollBars = ScrollBars.Both;
-            detailsBox.WordWrap = false;
-            if (packagesListBox.SelectedItem is ListItem selectedItem)
-            {
-                detailsBox.Text = selectedItem.Details ?? string.Empty;
+                packageDetailsBox.Clear();
             }
         }
 
         private void searchBox_Enter(object? sender, EventArgs e)
         {
-            if (searchBox.Text == LocalizationManager.GetString("SearchPackages"))
+            if (searchBox.ForeColor == SystemColors.GrayText)
             {
-                searchBox.Clear();
+                searchBox.Text = "";
+                searchBox.ForeColor = SystemColors.WindowText;
             }
         }
 
         private void searchBox_Leave(object? sender, EventArgs e)
         {
-            if (searchBox.Text == string.Empty)
+            if (string.IsNullOrWhiteSpace(searchBox.Text))
             {
+                searchBox.ForeColor = SystemColors.GrayText;
                 searchBox.Text = LocalizationManager.GetString("SearchPackages");
             }
         }
 
-        private void searchButton_Click(object? sender, EventArgs e)
+        private void searchBox_TextChanged(object? sender, EventArgs e)
         {
-            packagesListBox.Items.Clear();
-            // Repopulate based on Globals, which are not cleared
-            for (int i = 0; i < Globals.name.Count; i++)
+
+            if (!searchBox.Enabled || searchBox.ForeColor == SystemColors.GrayText || Globals.name.Count == 0)
             {
-                string? currentName = Globals.name[i];
-                if (currentName != null && currentName.StartsWith(searchBox.Text, StringComparison.CurrentCultureIgnoreCase))
+                return;
+            }
+
+            string searchText = searchBox.Text.ToLower();
+
+            packageListView.Items.Clear();
+
+            if (string.IsNullOrWhiteSpace(searchText))
+            {
+                // If search text is empty, show all packages
+                for (int i = 0; i < Globals.name.Count; i++)
                 {
-                    packagesListBox.Items.Add(new ListItem { Name = Globals.name[i], Link = Globals.link[i], Details = Globals.details[i], Package = Globals.package[i], Version = Globals.version[i] });
+                    var listViewItem = new ListViewItem(new string[] { Globals.name[i], Globals.version[i], Globals.architecture[i] });
+                    listViewItem.Tag = i;
+                    packageListView.Items.Add(listViewItem);
                 }
             }
-            packagesListBox.Sorted = true;
+            else
+            {
+                // Otherwise, filter based on search text
+                for (int i = 0; i < Globals.name.Count; i++)
+                {
+                    if (Globals.name[i].ToLower().Contains(searchText))
+                    {
+                        var listViewItem = new ListViewItem(new string[] { Globals.name[i], Globals.version[i], Globals.architecture[i] });
+                        listViewItem.Tag = i;
+                        packageListView.Items.Add(listViewItem);
+                    }
+                }
+            }
         }
 
-        private async void darkModeBtn_CheckedChanged(object? sender, EventArgs e)
-        {
-            if (isInitializing) return;
 
-            ApplyTheme(darkModeBtn.Checked);
-            await SaveSettings();
-        }
 
         private void ApplyTheme(bool isDarkMode)
         {
             if (isDarkMode)
             {
-                this.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                repoListBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                repoListBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                packagesListBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                packagesListBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                addRepoBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                addRepoBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                detailsBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                detailsBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                searchBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                searchBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                this.BackColor = ColorTranslator.FromHtml("#1e1e1e");
+                this.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+
+                menuStrip.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                menuStrip.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                
+                repoContextMenuStrip.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                repoContextMenuStrip.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
                 addRepoBtn.BackColor = ColorTranslator.FromHtml("#2d2d2d");
                 addRepoBtn.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
                 addRepoBtn.FlatStyle = FlatStyle.Flat;
                 addRepoBtn.FlatAppearance.BorderSize = 1;
+                addRepoBtn.FlatAppearance.BorderColor = ColorTranslator.FromHtml("#3c3c3c");
                 clearSelectedRepoBtn.BackColor = ColorTranslator.FromHtml("#2d2d2d");
                 clearSelectedRepoBtn.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
                 clearSelectedRepoBtn.FlatStyle = FlatStyle.Flat;
                 clearSelectedRepoBtn.FlatAppearance.BorderSize = 1;
+                clearSelectedRepoBtn.FlatAppearance.BorderColor = ColorTranslator.FromHtml("#3c3c3c");
                 clearAllReposBtn.BackColor = ColorTranslator.FromHtml("#2d2d2d");
                 clearAllReposBtn.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
                 clearAllReposBtn.FlatStyle = FlatStyle.Flat;
                 clearAllReposBtn.FlatAppearance.BorderSize = 1;
-                openSelectedRepoBtn.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                openSelectedRepoBtn.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                openSelectedRepoBtn.FlatStyle = FlatStyle.Flat;
-                openSelectedRepoBtn.FlatAppearance.BorderSize = 1;
+                clearAllReposBtn.FlatAppearance.BorderColor = ColorTranslator.FromHtml("#3c3c3c");
                 downloadSelectedPackageBtn.BackColor = ColorTranslator.FromHtml("#2d2d2d");
                 downloadSelectedPackageBtn.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
                 downloadSelectedPackageBtn.FlatStyle = FlatStyle.Flat;
                 downloadSelectedPackageBtn.FlatAppearance.BorderSize = 1;
-                searchButton.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                searchButton.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                searchButton.FlatStyle = FlatStyle.Flat;
-                searchButton.FlatAppearance.BorderSize = 1;
-                darkModeBtn.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                languageLabel.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                languageComboBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
-                languageComboBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
-                languageComboBox.FlatStyle = FlatStyle.Flat;
-                languageComboBox.Invalidate();
+                downloadSelectedPackageBtn.FlatAppearance.BorderColor = ColorTranslator.FromHtml("#3c3c3c");
+                repoListBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                repoListBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                packageListView.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                packageListView.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                addRepoBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                addRepoBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                packageDetailsBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                packageDetailsBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                searchBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                searchBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
             }
             else
             {
                 this.BackColor = SystemColors.Control;
+                this.ForeColor = SystemColors.ControlText;
+
+                menuStrip.BackColor = SystemColors.MenuBar;
+                menuStrip.ForeColor = SystemColors.MenuText;
+                
+                repoContextMenuStrip.BackColor = SystemColors.Menu;
+                repoContextMenuStrip.ForeColor = SystemColors.MenuText;
+                addRepoBtn.BackColor = SystemColors.Control;
+                addRepoBtn.ForeColor = SystemColors.ControlText;
+                addRepoBtn.FlatStyle = FlatStyle.Standard;
+                clearSelectedRepoBtn.BackColor = SystemColors.Control;
+                clearSelectedRepoBtn.ForeColor = SystemColors.ControlText;
+                clearSelectedRepoBtn.FlatStyle = FlatStyle.Standard;
+                clearAllReposBtn.BackColor = SystemColors.Control;
+                clearAllReposBtn.ForeColor = SystemColors.ControlText;
+                clearAllReposBtn.FlatStyle = FlatStyle.Standard;
+                downloadSelectedPackageBtn.BackColor = SystemColors.Control;
+                downloadSelectedPackageBtn.ForeColor = SystemColors.ControlText;
+                downloadSelectedPackageBtn.FlatStyle = FlatStyle.Standard;
                 repoListBox.BackColor = SystemColors.Window;
                 repoListBox.ForeColor = SystemColors.WindowText;
-                packagesListBox.BackColor = SystemColors.Window;
-                packagesListBox.ForeColor = SystemColors.WindowText;
+                packageListView.BackColor = SystemColors.Window;
+                packageListView.ForeColor = SystemColors.WindowText;
                 addRepoBox.BackColor = SystemColors.Window;
                 addRepoBox.ForeColor = SystemColors.WindowText;
-                detailsBox.BackColor = SystemColors.Window;
-                detailsBox.ForeColor = SystemColors.WindowText;
+                packageDetailsBox.BackColor = SystemColors.Window;
+                packageDetailsBox.ForeColor = SystemColors.WindowText;
                 searchBox.BackColor = SystemColors.Window;
                 searchBox.ForeColor = SystemColors.WindowText;
-                
-                foreach (var button in this.Controls.OfType<Button>())
-                {
-                    button.BackColor = SystemColors.Control;
-                    button.ForeColor = SystemColors.ControlText;
-                    button.FlatStyle = FlatStyle.Standard;
-                }
+            }
 
-                darkModeBtn.ForeColor = SystemColors.ControlText;
-                languageLabel.ForeColor = SystemColors.ControlText;
-                languageComboBox.BackColor = SystemColors.Window;
-                languageComboBox.ForeColor = SystemColors.WindowText;
-                languageComboBox.FlatStyle = FlatStyle.Standard;
-                languageComboBox.Invalidate();
+            lightModeToolStripMenuItem.Checked = !isDarkMode;
+            darkModeToolStripMenuItem.Checked = isDarkMode;
+            if (searchBox.ForeColor == SystemColors.GrayText || string.IsNullOrWhiteSpace(searchBox.Text) || searchBox.Text == LocalizationManager.GetString("SearchPackages"))
+            {
+                searchBox.ForeColor = SystemColors.GrayText;
+                searchBox.Text = LocalizationManager.GetString("SearchPackages");
             }
         }
 
         private async Task SaveSettings()
         {
-            string sSettings = settingsPath;
-            var settings = new
+            try
             {
-                Language = languageComboBox.SelectedValue?.ToString() ?? "tr"
-            };
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            await File.WriteAllTextAsync(sSettings, JsonSerializer.Serialize(settings, options));
+                var settings = new 
+                { 
+                    Language = GetCurrentLanguageCode(),
+                    DarkMode = darkModeToolStripMenuItem.Checked
+                };
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                await File.WriteAllTextAsync(settingsPath, JsonSerializer.Serialize(settings, options));
+            }
+            catch (Exception ex)
+            {
+                // Log error but don't show to user
+                System.Diagnostics.Debug.WriteLine($"Failed to save settings: {ex.Message}");
+            }
         }
 
         private void ApplyLocalization()
         {
-            this.Text = LocalizationManager.GetString("FormTitle");
+            this.Text = LocalizationManager.GetString("AppTitle");
             addRepoBtn.Text = LocalizationManager.GetString("AddRepo");
             clearAllReposBtn.Text = LocalizationManager.GetString("RemoveAllRepos");
             clearSelectedRepoBtn.Text = LocalizationManager.GetString("RemoveSelectedRepo");
-            openSelectedRepoBtn.Text = LocalizationManager.GetString("OpenSelectedRepo");
             downloadSelectedPackageBtn.Text = LocalizationManager.GetString("DownloadSelectedPackage");
-            searchButton.Text = LocalizationManager.GetString("SearchButton");
-            darkModeBtn.Text = LocalizationManager.GetString("DarkMode");
-            languageLabel.Text = LocalizationManager.GetString("Language");
-
-            // Only update the search box text if it's a placeholder or empty
-            if (searchBox.Tag as string == "placeholder" || string.IsNullOrEmpty(searchBox.Text))
-            {
-                searchBox.Text = LocalizationManager.GetString("SearchPackages");
-                searchBox.Tag = "placeholder";
-            }
-        }
-
-        private async void languageComboBox_SelectedIndexChanged(object? sender, EventArgs e)
-        {
-            if (isInitializing) return;
             
-            var selectedItem = languageComboBox.SelectedItem as dynamic;
-            if (selectedItem == null) return;
+            settingsToolStripMenuItem.Text = LocalizationManager.GetString("MenuSettings");
+            viewToolStripMenuItem.Text = LocalizationManager.GetString("MenuView");
+            aboutToolStripMenuItem.Text = LocalizationManager.GetString("MenuAbout");
+            languageToolStripMenuItem.Text = LocalizationManager.GetString("MenuLanguage");
+            themeToolStripMenuItem.Text = LocalizationManager.GetString("MenuTheme");
+            lightModeToolStripMenuItem.Text = LocalizationManager.GetString("LightMode");
+            darkModeToolStripMenuItem.Text = LocalizationManager.GetString("DarkMode");
+            
+            editRepoToolStripMenuItem.Text = LocalizationManager.GetString("ContextMenuEdit");
+            deleteRepoToolStripMenuItem.Text = LocalizationManager.GetString("ContextMenuDelete");
+            
+            columnHeaderName.Text = LocalizationManager.GetString("PackageNameColumn");
+            columnHeaderVersion.Text = LocalizationManager.GetString("VersionColumn");
+            columnHeaderArchitecture.Text = LocalizationManager.GetString("ArchitectureColumn");
 
-            string selectedLang = selectedItem.Code;
-            await LocalizationManager.LoadLanguage(selectedLang);
-            ApplyLocalization();
-            await SaveSettings();
-        }
-
-        private void LanguageComboBox_DrawItem(object? sender, DrawItemEventArgs e)
-        {
-            e.DrawBackground();
-            e.DrawFocusRectangle();
-
-            string text;
-            if (e.Index >= 0)
+            englishToolStripMenuItem.Checked = GetCurrentLanguageCode() == "en";
+            turkishToolStripMenuItem.Checked = GetCurrentLanguageCode() == "tr";
+            if (searchBox.ForeColor == SystemColors.GrayText || string.IsNullOrWhiteSpace(searchBox.Text) || searchBox.Text == LocalizationManager.GetString("SearchPackages"))
             {
-                text = languageComboBox.GetItemText(languageComboBox.Items[e.Index]) ?? string.Empty;
-            }
-            else
-            {
-                // Edit portion (selected item)
-                text = languageComboBox.GetItemText(languageComboBox.SelectedItem) ?? string.Empty;
-            }
-
-            var font = e.Font ?? languageComboBox.Font;
-
-            if (e.State.HasFlag(DrawItemState.Selected) && e.Index >= 0)
-            {
-                e.Graphics.DrawString(text, font, SystemBrushes.HighlightText, e.Bounds);
-            }
-            else
-            {
-                using var brush = new SolidBrush(languageComboBox.ForeColor);
-                e.Graphics.DrawString(text, font, brush, e.Bounds);
+                searchBox.ForeColor = SystemColors.GrayText;
+                searchBox.Text = LocalizationManager.GetString("SearchPackages");
             }
         }
+
+
 
         private async Task SaveRepos()
         {
@@ -764,20 +723,362 @@ namespace WindowsRepoTool
             }
         }
 
+        private string GetCurrentLanguageCode()
+        {
+            return englishToolStripMenuItem.Checked ? "en" : "tr";
+        }
+
+        private async void downloadSelectedPackageBtn_Click(object? sender, EventArgs e)
+        {
+            if (packageListView.SelectedItems.Count == 0)
+            {
+                MessageBox.Show(LocalizationManager.GetString("PleaseSelectPackage"), LocalizationManager.GetString("NoticeTitle"));
+                return;
+            }
+
+            int selectedIndex = (int)packageListView.SelectedItems[0].Tag;
+            
+            // Add bounds checking
+            if (selectedIndex < 0 || selectedIndex >= Globals.package.Count)
+            {
+                MessageBox.Show("Seçilen paket bilgisi bulunamadı.", LocalizationManager.GetString("ErrorTitle"));
+                return;
+            }
+            
+            string? url = Globals.repo + Globals.link[selectedIndex];
+            string? package = Globals.package[selectedIndex];
+            string? version = Globals.version[selectedIndex];
+            string? architecture = Globals.architecture[selectedIndex];
+            string originalFileName = Path.GetFileName(url);
+            string extension = Path.GetExtension(originalFileName);
+            
+            // Create new filename: Package+Version+Architecture+Extension
+            string newFileName = $"{package}_{version}_{architecture}{extension}";
+            string destinationPath = Path.Combine("Debs", newFileName);
+
+            try
+            {
+                // Modern download indication: Change cursor and window title
+                this.Cursor = Cursors.AppStarting;
+                string originalTitle = this.Text;
+                this.Text = $"İndiriliyor: {package} v{version} - {originalTitle}";
+                downloadSelectedPackageBtn.Enabled = false;
+                downloadSelectedPackageBtn.Text = "İndiriliyor...";
+
+                using (var httpClient = new HttpClient())
+                {
+                    using (var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+                    {
+                        response.EnsureSuccessStatusCode();
+
+                        var totalBytes = response.Content.Headers.ContentLength;
+
+                        using (var contentStream = await response.Content.ReadAsStreamAsync())
+                        {
+                            using (var fileStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
+                            {
+                                var totalBytesRead = 0L;
+                                var buffer = new byte[8192];
+                                var isMoreToRead = true;
+
+                                do
+                                {
+                                    var bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length);
+                                    if (bytesRead == 0)
+                                    {
+                                        isMoreToRead = false;
+                                    }
+                                    else
+                                    {
+                                        await fileStream.WriteAsync(buffer, 0, bytesRead);
+                                        totalBytesRead += bytesRead;
+
+                                        // Update window title with progress
+                                        if (totalBytes.HasValue)
+                                        {
+                                            var progressPercentage = (int)((totalBytesRead * 100) / totalBytes.Value);
+                                            this.Text = $"İndiriliyor: {package} v{version} (%{progressPercentage}) - {originalTitle}";
+                                        }
+                                    }
+                                }
+                                while (isMoreToRead);
+                            }
+                        }
+                    }
+                }
+
+                // Restore original state
+                this.Text = originalTitle;
+                downloadSelectedPackageBtn.Enabled = true;
+                downloadSelectedPackageBtn.Text = LocalizationManager.GetString("DownloadSelectedPackage");
+                
+                MessageBox.Show($"{package} v{version} ({architecture}) {LocalizationManager.GetString("DownloadedSuccessfully")}", LocalizationManager.GetString("SuccessTitle"));
+            }
+            catch (Exception ex)
+            {
+                // Restore original state on error
+                this.Text = LocalizationManager.GetString("AppTitle");
+                downloadSelectedPackageBtn.Enabled = true;
+                downloadSelectedPackageBtn.Text = LocalizationManager.GetString("DownloadSelectedPackage");
+                
+                MessageBox.Show($"{LocalizationManager.GetString("DownloadFailed")} {ex.Message}", LocalizationManager.GetString("ErrorTitle"));
+            }
+            finally
+            {
+                this.Cursor = Cursors.Default;
+            }
+        }
+
+        private void PackageListView_ColumnClick(object? sender, ColumnClickEventArgs e)
+        {
+            // If the same column is clicked, reverse the sort order
+            if (e.Column == currentSortColumn)
+            {
+                sortAscending = !sortAscending;
+            }
+            else
+            {
+                // New column clicked, default to ascending
+                currentSortColumn = e.Column;
+                sortAscending = true;
+            }
+
+            // Sort the ListView
+            packageListView.ListViewItemSorter = new ListViewItemComparer(e.Column, sortAscending);
+            packageListView.Sort();
+        }
+
+        // Menu event handlers
+        private async void englishToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            await ChangeLanguage("en");
+        }
+
+        private async void turkishToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            await ChangeLanguage("tr");
+        }
+
+        private async void lightModeToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            ApplyTheme(false);
+            await SaveSettings();
+        }
+
+        private async void darkModeToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            ApplyTheme(true);
+            await SaveSettings();
+        }
+
+        private void aboutToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            MessageBox.Show(LocalizationManager.GetString("AboutText"), LocalizationManager.GetString("AboutTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private async Task ChangeLanguage(string languageCode)
+        {
+            if (!isInitializing)
+            {
+                await LocalizationManager.LoadLanguage(languageCode);
+                ApplyLocalization();
+                await SaveSettings();
+            }
+        }
+
         private void SetSelectedLanguage(string code)
         {
-            for (int i = 0; i < languageComboBox.Items.Count; i++)
+            englishToolStripMenuItem.Checked = code == "en";
+            turkishToolStripMenuItem.Checked = code == "tr";
+        }
+
+        private void addRepoBox_TextChanged(object? sender, EventArgs e)
+        {
+            string text = addRepoBox.Text.Trim();
+            addRepoBtn.Enabled = !string.IsNullOrEmpty(text) && text != "https://" && text != "http://";
+        }
+
+        private async void editRepoToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            if (repoListBox.SelectedItem == null)
             {
-                dynamic item = languageComboBox.Items[i];
-                if (item.Code == code)
+                MessageBox.Show(LocalizationManager.GetString("PleaseSelectRepo"), LocalizationManager.GetString("WarningTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string currentRepo = repoListBox.GetItemText(repoListBox.SelectedItem);
+            string? newRepo = ShowInputDialog(
+                LocalizationManager.GetString("EditRepoTitle"),
+                LocalizationManager.GetString("EditRepoPrompt"),
+                currentRepo
+            );
+
+            if (string.IsNullOrWhiteSpace(newRepo) || newRepo == currentRepo)
+                return;
+
+            if (!newRepo.StartsWith("http://") && !newRepo.StartsWith("https://"))
+            {
+                newRepo = "https://" + newRepo;
+            }
+            for (int i = 0; i < repoListBox.Items.Count; i++)
+            {
+                if (i != repoListBox.SelectedIndex && repoListBox.GetItemText(repoListBox.Items[i]) == newRepo)
                 {
-                    languageComboBox.SelectedIndex = i;
+                    MessageBox.Show(LocalizationManager.GetString("RepoAlreadyAdded"), LocalizationManager.GetString("WarningTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
             }
-            // fallback first
-            if (languageComboBox.Items.Count > 0)
-                languageComboBox.SelectedIndex = 0;
+
+            int selectedIndex = repoListBox.SelectedIndex;
+            repoListBox.Items[selectedIndex] = newRepo;
+            repoListBox.SelectedIndex = selectedIndex;
+
+            await SaveRepos();
+
+            MessageBox.Show(LocalizationManager.GetString("RepoAddedSuccessfully"), LocalizationManager.GetString("SuccessTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private async void deleteRepoToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            if (repoListBox.SelectedItem == null)
+            {
+                MessageBox.Show(LocalizationManager.GetString("PleaseSelectRepo"), LocalizationManager.GetString("WarningTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string selectedRepo = repoListBox.GetItemText(repoListBox.SelectedItem);
+            DialogResult result = MessageBox.Show(
+                $"{LocalizationManager.GetString("ConfirmClearSelectedRepo")}\n\n{selectedRepo}",
+                LocalizationManager.GetString("WarningTitle"),
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question
+            );
+
+            if (result == DialogResult.Yes)
+            {
+                repoListBox.Items.Remove(repoListBox.SelectedItem);
+                
+                packageListView.Items.Clear();
+                packageDetailsBox.Clear();
+                searchBox.Text = "";
+                searchBox.ForeColor = SystemColors.GrayText;
+                searchBox.Text = LocalizationManager.GetString("SearchPackages");
+                searchBox.Enabled = false;
+
+                await SaveRepos();
+                MessageBox.Show(LocalizationManager.GetString("ClearedSelectedRepo"), LocalizationManager.GetString("SuccessTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private string? ShowInputDialog(string title, string promptText, string defaultValue = "")
+        {
+            Form prompt = new Form()
+            {
+                Width = 550,
+                Height = 180,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                Text = title,
+                StartPosition = FormStartPosition.CenterParent,
+                MaximizeBox = false,
+                MinimizeBox = false
+            };
+
+            Label textLabel = new Label() { Left = 15, Top = 15, Width = 510, Text = promptText };
+            TextBox textBox = new TextBox() { Left = 15, Top = 45, Width = 510, Text = defaultValue };
+            Button confirmation = new Button() { Text = LocalizationManager.GetString("ButtonOK"), Left = 350, Width = 80, Top = 85, Height = 35, DialogResult = DialogResult.OK };
+            Button cancel = new Button() { Text = LocalizationManager.GetString("ButtonCancel"), Left = 440, Width = 80, Top = 85, Height = 35, DialogResult = DialogResult.Cancel };
+
+            confirmation.Click += (sender, e) => { prompt.Close(); };
+            cancel.Click += (sender, e) => { prompt.Close(); };
+
+            prompt.Controls.Add(textBox);
+            prompt.Controls.Add(confirmation);
+            prompt.Controls.Add(cancel);
+            prompt.Controls.Add(textLabel);
+            prompt.AcceptButton = confirmation;
+            prompt.CancelButton = cancel;
+
+            if (darkModeToolStripMenuItem.Checked)
+            {
+                prompt.BackColor = ColorTranslator.FromHtml("#1e1e1e");
+                prompt.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                textLabel.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                textBox.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                textBox.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                confirmation.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                confirmation.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                confirmation.FlatStyle = FlatStyle.Flat;
+                cancel.BackColor = ColorTranslator.FromHtml("#2d2d2d");
+                cancel.ForeColor = ColorTranslator.FromHtml("#dfdfdf");
+                cancel.FlatStyle = FlatStyle.Flat;
+            }
+
+            return prompt.ShowDialog() == DialogResult.OK ? textBox.Text : null;
+        }
+    }
+
+    // Custom comparer for ListView sorting
+    public class ListViewItemComparer : IComparer
+    {
+        private int columnIndex;
+        private bool ascending;
+
+        public ListViewItemComparer(int column, bool ascending)
+        {
+            this.columnIndex = column;
+            this.ascending = ascending;
+        }
+
+        public int Compare(object? x, object? y)
+        {
+            if (x is not ListViewItem itemX || y is not ListViewItem itemY)
+                return 0;
+
+            string textX = columnIndex < itemX.SubItems.Count ? itemX.SubItems[columnIndex].Text : "";
+            string textY = columnIndex < itemY.SubItems.Count ? itemY.SubItems[columnIndex].Text : "";
+
+            int result;
+
+            // For version column (index 1), try to do version-aware comparison
+            if (columnIndex == 1)
+            {
+                result = CompareVersions(textX, textY);
+            }
+            else
+            {
+                // For other columns, use string comparison
+                result = String.Compare(textX, textY, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return ascending ? result : -result;
+        }
+
+        private int CompareVersions(string version1, string version2)
+        {
+            try
+            {
+                // Try to parse as version numbers
+                var v1Parts = version1.Split('.', '-', '+').Select(p => int.TryParse(p, out int n) ? n : 0).ToArray();
+                var v2Parts = version2.Split('.', '-', '+').Select(p => int.TryParse(p, out int n) ? n : 0).ToArray();
+
+                int maxLength = Math.Max(v1Parts.Length, v2Parts.Length);
+
+                for (int i = 0; i < maxLength; i++)
+                {
+                    int part1 = i < v1Parts.Length ? v1Parts[i] : 0;
+                    int part2 = i < v2Parts.Length ? v2Parts[i] : 0;
+
+                    if (part1 != part2)
+                        return part1.CompareTo(part2);
+                }
+
+                return 0;
+            }
+            catch
+            {
+                // If version parsing fails, fall back to string comparison
+                return String.Compare(version1, version2, StringComparison.OrdinalIgnoreCase);
+            }
         }
     }
 }
